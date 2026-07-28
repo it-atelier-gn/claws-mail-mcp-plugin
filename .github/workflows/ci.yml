@@ -192,3 +192,33 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
+
+  publish-registry:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [ build-windows, build-linux ]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set version in server.json
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF#refs/tags/v}"
+          jq --arg v "$version" '.version = $v' packaging/registry/server.json > packaging/registry/server.tmp
+          mv packaging/registry/server.tmp packaging/registry/server.json
+
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+
+      - name: Authenticate to MCP Registry
+        run: ./mcp-publisher login github-oidc
+
+      - name: Validate server.json
+        run: ./mcp-publisher validate packaging/registry/server.json
+
+      - name: Publish server to MCP Registry
+        run: ./mcp-publisher publish packaging/registry/server.json

@@ -24,13 +24,44 @@ To build from source instead, see [Building](#building).
 
 ## Connecting an AI tool
 
-Once loaded, the plugin writes a ready-to-use connector config to `mcp_client.json` in the Claws Mail config directory. Copy the values from there (endpoint URL and bearer token) into your tool of choice. Template files with the same shape are in `packaging/`:
+Once loaded, the plugin writes the real endpoint URL and bearer token to `mcp_client.json` in the Claws Mail config directory. Use those two values with whichever method below matches your tool. The server is loopback-only (`127.0.0.1`), so it is reachable only from AI tools running on the same machine as Claws Mail.
 
-- `packaging/claude/mcp.json`: Claude Desktop (Settings > Developer > Edit Config) and Claude Code (`.mcp.json`)
-- `packaging/vscode/mcp.json`: VS Code / GitHub Copilot Chat (`.vscode/mcp.json`), prompts for the token instead of storing it in the file
-- `packaging/codex/config.toml`: Codex CLI (`~/.codex/config.toml`), reads the token from the `CLAWS_MCP_TOKEN` environment variable
+### Claude Code
 
-`packaging/registry/server.json` is a manifest for the [MCP registry](https://github.com/modelcontextprotocol/registry), ready to submit.
+```
+claude mcp add --transport http claws-mail http://127.0.0.1:8765/mcp \
+  --header "Authorization: Bearer <TOKEN>"
+```
+
+### Claude Desktop
+
+Settings > Developer > Edit Config, then merge in `packaging/claude/mcp.json`
+(fill in `<TOKEN>`). Do not use the "Add custom connector" UI for this server:
+that flow connects from Anthropic's servers, not from your machine, so it
+cannot reach a loopback address.
+
+### VS Code / GitHub Copilot Chat
+
+```
+code --add-mcp "{\"name\":\"claws-mail\",\"type\":\"http\",\"url\":\"http://127.0.0.1:8765/mcp\",\"headers\":{\"Authorization\":\"Bearer <TOKEN>\"}}"
+```
+
+Or copy `packaging/vscode/mcp.json` to `.vscode/mcp.json`; it prompts for the
+token instead of storing it in the file.
+
+### Codex CLI
+
+```
+export CLAWS_MCP_TOKEN=<TOKEN>
+codex mcp add claws-mail --url http://127.0.0.1:8765/mcp --bearer-token-env-var CLAWS_MCP_TOKEN
+```
+
+This matches `packaging/codex/config.toml`, which Codex reads from
+`~/.codex/config.toml`.
+
+### MCP registry
+
+`packaging/registry/server.json` is published to the [MCP registry](https://registry.modelcontextprotocol.io) as `io.github.it-atelier-gn/claws-mail-mcp-plugin` on every tagged release, via `.github/workflows/ci.yml`'s `publish-registry` job (GitHub OIDC auth, no stored credentials). The registry rejects loopback URLs as `remotes`, so this is a discovery-only listing without connection details; it links back to this README for installation and the per-tool commands above.
 
 ---
 
