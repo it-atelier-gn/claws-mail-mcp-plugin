@@ -1,7 +1,7 @@
 # claws-mail-mcp-plugin
 
 [![CI](https://github.com/it-atelier-gn/claws-mail-mcp-plugin/actions/workflows/ci.yml/badge.svg)](https://github.com/it-atelier-gn/claws-mail-mcp-plugin/actions/workflows/ci.yml)
-![Claws Mail](https://img.shields.io/badge/Claws%20Mail-4.3.0%20%7C%204.3.1-blue)
+[![Claws Mail](https://img.shields.io/badge/Claws%20Mail-supported%20versions-blue)](ci/claws-versions.json)
 [![License: GPL v3+](https://img.shields.io/badge/License-GPLv3%2B-blue.svg)](LICENSE)
 
 Native Claws Mail plugin that exposes the running mail client as an MCP server.
@@ -105,8 +105,14 @@ This installs the plugin into the Claws Mail plugin directory reported by
 ## Supported Claws Mail versions
 
 CI builds and tests the plugin against every version listed in
-`.github/workflows/ci.yml` (currently 4.3.0 and 4.3.1), on both Linux and
+[`ci/claws-versions.json`](ci/claws-versions.json), on both Linux and
 Windows. Each combination gets its own release artifact.
+
+A scheduled workflow (`.github/workflows/check-claws-version.yml`) checks the
+Claws Mail release feed weekly. When it finds a version not yet in
+`ci/claws-versions.json`, it trial-builds the plugin against it on both OSes.
+If that succeeds, it opens a pull request adding the version to the supported
+list; if it fails, it opens an issue instead.
 
 ---
 

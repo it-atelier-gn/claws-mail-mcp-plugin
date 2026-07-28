@@ -1,0 +1,185 @@
+name: Check for new Claws Mail version
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      new_version: ${{ steps.check.outputs.new_version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        run: |
+          set -euo pipefail
+          latest="$(curl -fsSL https://www.claws-mail.org/releases.rss \
+            | grep -oE '<guid>[0-9]+\.[0-9]+\.[0-9]+</guid>' \
+            | head -1 | sed -E 's#</?guid>##g')"
+          if [ -z "$latest" ]; then
+            echo "Could not determine latest version from releases.rss" >&2
+            exit 1
+          fi
+          if grep -q "\"$latest\"" ci/claws-versions.json; then
+            echo "Latest release ($latest) is already supported."
+            echo "new_version=" >> "$GITHUB_OUTPUT"
+          else
+            echo "New Claws Mail release detected: $latest"
+            echo "new_version=$latest" >> "$GITHUB_OUTPUT"
+          fi
+
+  trial-build-linux:
+    needs: check
+    if: needs.check.outputs.new_version != ''
+    runs-on: ubuntu-latest
+    env:
+      CLAWS_VERSION: ${{ needs.check.outputs.new_version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential autoconf automake libtool make intltool pkg-config \
+            meson ninja-build \
+            libgtk-3-dev libglib2.0-dev libgnutls28-dev libgcrypt20-dev \
+            libenchant-2-dev
+
+      - name: Build Claws SDK
+        run: PREFIX="$PWD/.claws-sdk" bash ci/build-claws-sdk.sh
+
+      - name: Configure
+        run: PKG_CONFIG_PATH="$PWD/.claws-sdk/lib/pkgconfig" meson setup build
+
+      - name: Build
+        run: meson compile -C build
+
+      - name: Unit tests
+        run: meson test -C build
+
+  trial-build-windows:
+    needs: check
+    if: needs.check.outputs.new_version != ''
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    env:
+      CLAWS_VERSION: ${{ needs.check.outputs.new_version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            base-devel
+            git
+            autoconf
+            automake
+            libtool
+            make
+            intltool
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-meson
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-gtk3
+            mingw-w64-x86_64-glib2
+            mingw-w64-x86_64-gnutls
+            mingw-w64-x86_64-libgcrypt
+            mingw-w64-x86_64-enchant
+
+      - name: Build Claws SDK
+        run: PREFIX="$PWD/.claws-sdk" bash ci/build-claws-sdk.sh
+
+      - name: Configure
+        run: PKG_CONFIG_PATH="$PWD/.claws-sdk/lib/pkgconfig" meson setup build
+
+      - name: Build
+        run: meson compile -C build
+
+      - name: Unit tests
+        run: meson test -C build
+
+  open-pr:
+    needs: [ check, trial-build-linux, trial-build-windows ]
+    if: needs.check.outputs.new_version != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      NEW_VERSION: ${{ needs.check.outputs.new_version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add version to supported list
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+
+          version = os.environ["NEW_VERSION"]
+          path = "ci/claws-versions.json"
+          with open(path) as f:
+              versions = json.load(f)
+          if version not in versions:
+              versions.append(version)
+          with open(path, "w") as f:
+              json.dump(versions, f, indent=2)
+              f.write("\n")
+          PY
+
+      - name: Open pull request
+        run: |
+          set -euo pipefail
+          branch="claws-mail-${NEW_VERSION}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add ci/claws-versions.json
+          git commit -m "Add support for Claws Mail ${NEW_VERSION}"
+          git push origin "$branch" --force
+          gh pr create \
+            --title "Add support for Claws Mail ${NEW_VERSION}" \
+            --body "Claws Mail ${NEW_VERSION} was detected via https://www.claws-mail.org/releases.rss. A trial build against it succeeded on both Linux and Windows in this workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --head "$branch" --base main \
+            || echo "PR already exists for branch $branch"
+
+  report-failure:
+    needs: [ check, trial-build-linux, trial-build-windows ]
+    if: >-
+      always() && needs.check.outputs.new_version != '' &&
+      (needs.trial-build-linux.result == 'failure' || needs.trial-build-windows.result == 'failure')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      NEW_VERSION: ${{ needs.check.outputs.new_version }}
+    steps:
+      - name: Open or update tracking issue
+        run: |
+          set -euo pipefail
+          gh label create "claws-version-check" \
+            --color FF8C00 \
+            --description "Automated Claws Mail release version check" \
+            2>/dev/null || true
+          title="Claws Mail ${NEW_VERSION} trial build failed"
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          existing="$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number' || true)"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "Still failing as of this run: $run_url"
+          else
+            gh issue create --title "$title" \
+              --body "The scheduled version check found Claws Mail ${NEW_VERSION}, but the trial build failed. See: $run_url" \
+              --label "claws-version-check"
+          fi

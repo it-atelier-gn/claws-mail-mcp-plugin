@@ -8,11 +8,21 @@ on:
     branches: [ main ]
 
 jobs:
+  versions:
+    runs-on: ubuntu-latest
+    outputs:
+      claws_versions: ${{ steps.set.outputs.versions }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: set
+        run: echo "versions=$(cat ci/claws-versions.json | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+
   build-windows:
+    needs: versions
     strategy:
       fail-fast: false
       matrix:
-        claws_version: [ '4.3.0', '4.3.1' ]
+        claws_version: ${{ fromJSON(needs.versions.outputs.claws_versions) }}
     runs-on: windows-latest
     defaults:
       run:
@@ -96,10 +106,11 @@ jobs:
           if-no-files-found: error
 
   build-linux:
+    needs: versions
     strategy:
       fail-fast: false
       matrix:
-        claws_version: [ '4.3.0', '4.3.1' ]
+        claws_version: ${{ fromJSON(needs.versions.outputs.claws_versions) }}
     runs-on: ubuntu-latest
     env:
       CLAWS_VERSION: ${{ matrix.claws_version }}
