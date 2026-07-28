@@ -7,15 +7,18 @@ on:
   pull_request:
     branches: [ main ]
 
-env:
-  CLAWS_VERSION: "4.3.1"
-
 jobs:
   build-windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        claws_version: [ '4.3.0', '4.3.1' ]
     runs-on: windows-latest
     defaults:
       run:
         shell: msys2 {0}
+    env:
+      CLAWS_VERSION: ${{ matrix.claws_version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -49,14 +52,25 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .claws-sdk
-          key: claws-sdk-${{ env.CLAWS_VERSION }}-mingw64
+          key: claws-sdk-${{ matrix.claws_version }}-mingw64
 
       - name: Build Claws SDK
         if: steps.sdk.outputs.cache-hit != 'true'
         run: PREFIX="$PWD/.claws-sdk" bash ci/build-claws-sdk.sh
 
+      - name: Determine plugin version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "value=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Configure
-        run: PKG_CONFIG_PATH="$PWD/.claws-sdk/lib/pkgconfig" meson setup build
+        run: >-
+          PKG_CONFIG_PATH="$PWD/.claws-sdk/lib/pkgconfig"
+          meson setup build -Dplugin_version="${{ steps.version.outputs.value }}"
 
       - name: Static analysis (cppcheck)
         run: meson compile -C build cppcheck
@@ -71,15 +85,24 @@ jobs:
       - name: Unit tests
         run: meson test -C build
 
+      - name: Rename artifact
+        run: cp build/mcp_plugin.dll "mcp_plugin-windows-claws${{ matrix.claws_version }}.dll"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mcp_plugin-windows
-          path: build/mcp_plugin.dll
+          name: mcp_plugin-windows-claws${{ matrix.claws_version }}
+          path: mcp_plugin-windows-claws${{ matrix.claws_version }}.dll
           if-no-files-found: error
 
   build-linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        claws_version: [ '4.3.0', '4.3.1' ]
     runs-on: ubuntu-latest
+    env:
+      CLAWS_VERSION: ${{ matrix.claws_version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -97,14 +120,25 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .claws-sdk
-          key: claws-sdk-${{ env.CLAWS_VERSION }}-linux
+          key: claws-sdk-${{ matrix.claws_version }}-linux
 
       - name: Build Claws SDK
         if: steps.sdk.outputs.cache-hit != 'true'
         run: PREFIX="$PWD/.claws-sdk" bash ci/build-claws-sdk.sh
 
+      - name: Determine plugin version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "value=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Configure
-        run: PKG_CONFIG_PATH="$PWD/.claws-sdk/lib/pkgconfig" meson setup build
+        run: >-
+          PKG_CONFIG_PATH="$PWD/.claws-sdk/lib/pkgconfig"
+          meson setup build -Dplugin_version="${{ steps.version.outputs.value }}"
 
       - name: Static analysis (cppcheck)
         run: meson compile -C build cppcheck
@@ -119,11 +153,14 @@ jobs:
       - name: Unit tests
         run: meson test -C build
 
+      - name: Rename artifact
+        run: cp build/mcp_plugin.so "mcp_plugin-linux-claws${{ matrix.claws_version }}.so"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mcp_plugin-linux
-          path: build/mcp_plugin.so
+          name: mcp_plugin-linux-claws${{ matrix.claws_version }}
+          path: mcp_plugin-linux-claws${{ matrix.claws_version }}.so
           if-no-files-found: error
 
   release:
@@ -133,20 +170,14 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download Windows artifact
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          name: mcp_plugin-windows
+          pattern: mcp_plugin-*
           path: dist
-      - name: Download Linux artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: mcp_plugin-linux
-          path: dist
+          merge-multiple: true
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            dist/mcp_plugin.dll
-            dist/mcp_plugin.so
+          files: dist/*
           generate_release_notes: true

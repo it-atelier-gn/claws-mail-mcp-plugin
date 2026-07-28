@@ -1,0 +1,16 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.it-atelier-gn/claws-mail-mcp-plugin",
+  "description": "Claws Mail plugin that exposes the running mail client to MCP clients over a local HTTP endpoint (bearer-token protected, loopback only).",
+  "version": "0.0.0",
+  "repository": {
+    "url": "https://github.com/it-atelier-gn/claws-mail-mcp-plugin",
+    "source": "github"
+  },
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "http://127.0.0.1:8765/mcp"
+    }
+  ]
+}

@@ -7,7 +7,9 @@
 #include <glib.h>
 
 #define MCP_PLUGIN_NAME    "MCP Server"
-#define MCP_PLUGIN_VERSION "0.1.0"
+#ifndef MCP_PLUGIN_VERSION
+#define MCP_PLUGIN_VERSION "0.0.0-dev"
+#endif
 #define MCP_PROTOCOL_VERSION "2025-06-18"
 
 typedef struct {

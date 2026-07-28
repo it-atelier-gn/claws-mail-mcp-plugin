@@ -1,0 +1,2 @@
+option('plugin_version', type: 'string', value: '',
+  description: 'Plugin version compiled into the binary, e.g. from a git tag. Empty autodetects via git describe, falling back to 0.0.0-dev.')

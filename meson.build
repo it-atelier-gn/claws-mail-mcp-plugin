@@ -7,7 +7,22 @@ project('mcp_plugin', 'c',
 cc = meson.get_compiler('c')
 is_windows = host_machine.system() == 'windows'
 
+plugin_version = get_option('plugin_version')
+if plugin_version == ''
+  git = find_program('git', required: false)
+  if git.found()
+    r = run_command(git, 'describe', '--tags', '--always', '--dirty', check: false)
+    if r.returncode() == 0 and r.stdout().strip() != ''
+      plugin_version = r.stdout().strip()
+    endif
+  endif
+endif
+if plugin_version == ''
+  plugin_version = '0.0.0-dev'
+endif
+
 add_project_arguments(['-Wall', '-Wextra', '-Wno-unused-parameter'], language: 'c')
+add_project_arguments('-DMCP_PLUGIN_VERSION="' + plugin_version + '"', language: 'c')
 if is_windows
   add_project_arguments('-D_CRT_RAND_S', language: 'c')
 endif
