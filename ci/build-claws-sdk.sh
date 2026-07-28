@@ -27,7 +27,6 @@ export CFLAGS="-D_POSIX_THREAD_SAFE_FUNCTIONS \
   -Wno-error=incompatible-pointer-types \
   -Wno-error=int-conversion \
   -Wno-error=implicit-int \
-  -Wno-error=return-mismatch \
   ${CFLAGS:-}"
 # shellcheck disable=SC2086
 ./configure --prefix="$PREFIX" --disable-libetpan --disable-manual $disable

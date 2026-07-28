@@ -11,7 +11,7 @@ env:
   CLAWS_VERSION: "4.3.1"
 
 jobs:
-  build:
+  build-windows:
     runs-on: windows-latest
     defaults:
       run:
@@ -34,6 +34,8 @@ jobs:
             intltool
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-meson
+            mingw-w64-x86_64-ninja
             mingw-w64-x86_64-gtk3
             mingw-w64-x86_64-glib2
             mingw-w64-x86_64-gnutls
@@ -53,44 +55,98 @@ jobs:
         if: steps.sdk.outputs.cache-hit != 'true'
         run: PREFIX="$PWD/.claws-sdk" bash ci/build-claws-sdk.sh
 
+      - name: Configure
+        run: PKG_CONFIG_PATH="$PWD/.claws-sdk/lib/pkgconfig" meson setup build
+
       - name: Static analysis (cppcheck)
-        run: make cppcheck
+        run: meson compile -C build cppcheck
 
       - name: Static analysis (clang-tidy)
-        run: PKG_CONFIG_PATH="$PWD/.claws-sdk/lib/pkgconfig" make tidy
+        run: meson compile -C build tidy
         continue-on-error: true
 
       - name: Build
-        run: >-
-          PKG_CONFIG_PATH="$PWD/.claws-sdk/lib/pkgconfig"
-          make OS=Windows_NT
-          CLAWS_LIBDIR="$PWD/.claws-sdk/lib"
-          TMP="$(cygpath -w "$RUNNER_TEMP")"
-          TEMP="$(cygpath -w "$RUNNER_TEMP")"
+        run: meson compile -C build
 
       - name: Unit tests
-        run: make test
+        run: meson test -C build
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mcp_plugin
+          name: mcp_plugin-windows
           path: build/mcp_plugin.dll
+          if-no-files-found: error
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential autoconf automake libtool make intltool pkg-config \
+            meson ninja-build \
+            libgtk-3-dev libglib2.0-dev libgnutls28-dev libgcrypt20-dev \
+            libenchant-2-dev cppcheck clang-tidy
+
+      - name: Cache Claws SDK
+        id: sdk
+        uses: actions/cache@v4
+        with:
+          path: .claws-sdk
+          key: claws-sdk-${{ env.CLAWS_VERSION }}-linux
+
+      - name: Build Claws SDK
+        if: steps.sdk.outputs.cache-hit != 'true'
+        run: PREFIX="$PWD/.claws-sdk" bash ci/build-claws-sdk.sh
+
+      - name: Configure
+        run: PKG_CONFIG_PATH="$PWD/.claws-sdk/lib/pkgconfig" meson setup build
+
+      - name: Static analysis (cppcheck)
+        run: meson compile -C build cppcheck
+
+      - name: Static analysis (clang-tidy)
+        run: meson compile -C build tidy
+        continue-on-error: true
+
+      - name: Build
+        run: meson compile -C build
+
+      - name: Unit tests
+        run: meson test -C build
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp_plugin-linux
+          path: build/mcp_plugin.so
           if-no-files-found: error
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [ build-windows, build-linux ]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Download artifact
+      - name: Download Windows artifact
         uses: actions/download-artifact@v4
         with:
-          name: mcp_plugin
+          name: mcp_plugin-windows
+          path: dist
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: mcp_plugin-linux
+          path: dist
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          files: mcp_plugin.dll
+          files: |
+            dist/mcp_plugin.dll
+            dist/mcp_plugin.so
           generate_release_notes: true
