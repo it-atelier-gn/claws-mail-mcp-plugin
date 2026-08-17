@@ -13,7 +13,7 @@ jobs:
     outputs:
       claws_versions: ${{ steps.set.outputs.versions }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: set
         run: echo "versions=$(cat ci/claws-versions.json | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
 
@@ -30,7 +30,7 @@ jobs:
     env:
       CLAWS_VERSION: ${{ matrix.claws_version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up MSYS2
         uses: msys2/setup-msys2@v2
@@ -115,7 +115,7 @@ jobs:
     env:
       CLAWS_VERSION: ${{ matrix.claws_version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install build dependencies
         run: |
@@ -201,7 +201,7 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set version in server.json
         run: |
