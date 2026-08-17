@@ -99,7 +99,7 @@ jobs:
         run: cp build/mcp_plugin.dll "mcp_plugin-windows-claws${{ matrix.claws_version }}.dll"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mcp_plugin-windows-claws${{ matrix.claws_version }}
           path: mcp_plugin-windows-claws${{ matrix.claws_version }}.dll
@@ -168,7 +168,7 @@ jobs:
         run: cp build/mcp_plugin.so "mcp_plugin-linux-claws${{ matrix.claws_version }}.so"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mcp_plugin-linux-claws${{ matrix.claws_version }}
           path: mcp_plugin-linux-claws${{ matrix.claws_version }}.so
