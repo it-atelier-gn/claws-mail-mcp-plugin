@@ -59,7 +59,7 @@ jobs:
 
       - name: Cache Claws SDK
         id: sdk
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .claws-sdk
           key: claws-sdk-${{ matrix.claws_version }}-mingw64
@@ -128,7 +128,7 @@ jobs:
 
       - name: Cache Claws SDK
         id: sdk
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .claws-sdk
           key: claws-sdk-${{ matrix.claws_version }}-linux
