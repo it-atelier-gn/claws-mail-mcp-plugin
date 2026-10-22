@@ -14,9 +14,10 @@ It runs inside Claws Mail and serves a local, loopback-only HTTP endpoint (JSON-
 
 Prebuilt binaries are attached to each [release](https://github.com/it-atelier-gn/claws-mail-mcp-plugin/releases), one per OS and supported Claws Mail version (e.g. `mcp-linux-claws4.3.1.so`, `mcp-windows-claws4.3.0.dll`). Pick the file matching your Claws Mail version and OS, then:
 
-1. Copy it into your Claws Mail plugin directory (`pkg-config --variable=plugindir claws-mail`, typically `~/.claws-mail/plugins` or `%APPDATA%\Claws-mail\plugins` on Windows). Any file name works except one ending in `_plugin.so` or `_plugin.dll`: Claws Mail does not load such a file on startup and drops it from the plugin list.
-2. Restart Claws Mail.
-3. Enable it under Configuration > Plugins if it is not loaded automatically.
+1. Save it in a folder of your choice, for example `~/.claws-mail/plugins` or `%APPDATA%\Claws-mail\plugins` on Windows, as `mcp.so` or `mcp.dll`. Any file name works except one ending in `_plugin.so` or `_plugin.dll`: Claws Mail does not load such a file on startup and drops it from the plugin list.
+2. In Claws Mail, open Configuration > Plugins, click Load... and select the file.
+
+Claws Mail loads the plugin again on every start.
 
 To build from source instead, see [Building](#building).
 
@@ -61,7 +62,7 @@ This matches `packaging/codex/config.toml`, which Codex reads from
 
 ### MCP registry
 
-`packaging/registry/server.json` is published to the [MCP registry](https://registry.modelcontextprotocol.io) as `io.github.it-atelier-gn/claws-mail-mcp-plugin` on every tagged release, via `.github/workflows/ci.yml`'s `publish-registry` job (GitHub OIDC auth, no stored credentials). The registry rejects loopback URLs as `remotes`, so this is a discovery-only listing without connection details; it links back to this README for installation and the per-tool commands above.
+The plugin is listed in the [MCP registry](https://registry.modelcontextprotocol.io) as `io.github.it-atelier-gn/claws-mail-mcp-plugin`. The listing carries no connection details; install the plugin and connect your tool as described above.
 
 ---
 
@@ -129,21 +130,15 @@ meson install -C build
 ```
 
 This installs the plugin into the Claws Mail plugin directory reported by
-`pkg-config --variable=plugindir claws-mail`.
+`pkg-config --variable=plugindir claws-mail`. Load it from there once under
+Configuration > Plugins > Load...
 
 ---
 
 ## Supported Claws Mail versions
 
-CI builds and tests the plugin against every version listed in
-[`ci/claws-versions.json`](ci/claws-versions.json), on both Linux and
-Windows. Each combination gets its own release artifact.
-
-A scheduled workflow (`.github/workflows/check-claws-version.yml`) checks the
-Claws Mail release feed weekly. When it finds a version not yet in
-`ci/claws-versions.json`, it trial-builds the plugin against it on both OSes.
-If that succeeds, it opens a pull request adding the version to the supported
-list; if it fails, it opens an issue instead.
+Each release contains a Linux and a Windows build for every Claws Mail
+version listed in [`ci/claws-versions.json`](ci/claws-versions.json).
 
 ---
 
