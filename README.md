@@ -69,7 +69,7 @@ The plugin is listed in the [MCP registry](https://registry.modelcontextprotocol
 ## Building
 
 Requires Meson, Ninja, a C compiler, and the Claws Mail development files
-(GTK3, GLib, GnuTLS, libgcrypt, enchant).
+(GTK3, GLib, GnuTLS, libgcrypt; on Linux also enchant).
 
 ### Linux
 
@@ -104,7 +104,7 @@ Install the MINGW64 toolchain and dependencies:
 ```
 pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-meson mingw-w64-x86_64-ninja \
   mingw-w64-x86_64-pkgconf mingw-w64-x86_64-gtk3 mingw-w64-x86_64-glib2 \
-  mingw-w64-x86_64-gnutls mingw-w64-x86_64-libgcrypt mingw-w64-x86_64-enchant
+  mingw-w64-x86_64-gnutls mingw-w64-x86_64-libgcrypt
 ```
 
 Build the Claws Mail SDK and set `PKG_CONFIG_PATH` as above, then run the same

@@ -53,7 +53,6 @@ jobs:
             mingw-w64-x86_64-glib2
             mingw-w64-x86_64-gnutls
             mingw-w64-x86_64-libgcrypt
-            mingw-w64-x86_64-enchant
             mingw-w64-x86_64-cppcheck
             mingw-w64-x86_64-clang-tools-extra
 
@@ -62,7 +61,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: .claws-sdk
-          key: claws-sdk-${{ matrix.claws_version }}-mingw64
+          key: claws-sdk-${{ matrix.claws_version }}-mingw64-noenchant
 
       - name: Build Claws SDK
         if: steps.sdk.outputs.cache-hit != 'true'
