@@ -53,7 +53,7 @@ sources = files(
 
 claws_plugindir = claws_dep_full.get_variable(pkgconfig: 'plugindir')
 
-shared_module('mcp_plugin', sources,
+shared_module('mcp', sources,
   dependencies: plugin_deps,
   link_args: plugin_link_args,
   name_prefix: '',
