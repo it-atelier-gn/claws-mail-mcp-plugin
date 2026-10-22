@@ -96,13 +96,13 @@ jobs:
         run: meson test -C build
 
       - name: Rename artifact
-        run: cp build/mcp_plugin.dll "mcp_plugin-windows-claws${{ matrix.claws_version }}.dll"
+        run: cp build/mcp.dll "mcp-windows-claws${{ matrix.claws_version }}.dll"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: mcp_plugin-windows-claws${{ matrix.claws_version }}
-          path: mcp_plugin-windows-claws${{ matrix.claws_version }}.dll
+          name: mcp-windows-claws${{ matrix.claws_version }}
+          path: mcp-windows-claws${{ matrix.claws_version }}.dll
           if-no-files-found: error
 
   build-linux:
@@ -165,13 +165,13 @@ jobs:
         run: meson test -C build
 
       - name: Rename artifact
-        run: cp build/mcp_plugin.so "mcp_plugin-linux-claws${{ matrix.claws_version }}.so"
+        run: cp build/mcp.so "mcp-linux-claws${{ matrix.claws_version }}.so"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: mcp_plugin-linux-claws${{ matrix.claws_version }}
-          path: mcp_plugin-linux-claws${{ matrix.claws_version }}.so
+          name: mcp-linux-claws${{ matrix.claws_version }}
+          path: mcp-linux-claws${{ matrix.claws_version }}.so
           if-no-files-found: error
 
   release:
@@ -184,7 +184,7 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@v8
         with:
-          pattern: mcp_plugin-*
+          pattern: mcp-*
           path: dist
           merge-multiple: true
       - name: Publish release

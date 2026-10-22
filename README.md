@@ -12,9 +12,9 @@ It runs inside Claws Mail and serves a local, loopback-only HTTP endpoint (JSON-
 
 ## Installing the plugin
 
-Prebuilt binaries are attached to each [release](https://github.com/it-atelier-gn/claws-mail-mcp-plugin/releases), one per OS and supported Claws Mail version (e.g. `mcp_plugin-linux-claws4.3.1.so`, `mcp_plugin-windows-claws4.3.0.dll`). Pick the file matching your Claws Mail version and OS, then:
+Prebuilt binaries are attached to each [release](https://github.com/it-atelier-gn/claws-mail-mcp-plugin/releases), one per OS and supported Claws Mail version (e.g. `mcp-linux-claws4.3.1.so`, `mcp-windows-claws4.3.0.dll`). Pick the file matching your Claws Mail version and OS, then:
 
-1. Copy it into your Claws Mail plugin directory (`pkg-config --variable=plugindir claws-mail`, typically `~/.claws-mail/plugins` or `%APPDATA%\Claws-mail\plugins` on Windows).
+1. Copy it into your Claws Mail plugin directory (`pkg-config --variable=plugindir claws-mail`, typically `~/.claws-mail/plugins` or `%APPDATA%\Claws-mail\plugins` on Windows). Any file name works except one ending in `_plugin.so` or `_plugin.dll`: Claws Mail does not load such a file on startup and drops it from the plugin list.
 2. Restart Claws Mail.
 3. Enable it under Configuration > Plugins if it is not loaded automatically.
 
@@ -94,7 +94,7 @@ meson compile -C build
 meson test -C build
 ```
 
-The plugin is built at `build/mcp_plugin.so`.
+The plugin is built at `build/mcp.so`.
 
 ### Windows (MSYS2)
 
@@ -108,7 +108,7 @@ pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-meson mingw-w64-x86_64-ninja \
 
 Build the Claws Mail SDK and set `PKG_CONFIG_PATH` as above, then run the same
 `meson setup` / `meson compile` / `meson test` commands. The plugin is built at
-`build/mcp_plugin.dll`.
+`build/mcp.dll`.
 
 ### Plugin version
 
