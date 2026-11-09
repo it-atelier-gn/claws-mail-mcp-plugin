@@ -107,15 +107,17 @@ static void test_flag_names(void)
 	g_assert_false(mcp_flag_from_name(NULL, &bit));
 }
 
+static McpJson *held_args;
+
 static McpMsgFilter parse_filter(const gchar *json)
 {
-	McpJson *args = mcp_json_parse(json, -1, NULL);
 	McpMsgFilter f;
 	gchar *error = NULL;
 
-	g_assert_true(mcp_filter_parse(args, &f, &error));
+	mcp_json_free(held_args);
+	held_args = mcp_json_parse(json, -1, NULL);
+	g_assert_true(mcp_filter_parse(held_args, &f, &error));
 	g_assert_null(error);
-	mcp_json_free(args);
 	return f;
 }
 
@@ -246,6 +248,8 @@ static void test_mime_attachment_detection(void)
 
 int main(int argc, char **argv)
 {
+	int ret;
+
 	g_test_init(&argc, &argv, NULL);
 	g_test_add_func("/msg-json/spam-set", test_spam_flag_set);
 	g_test_add_func("/msg-json/spam-clear", test_spam_flag_clear);
@@ -257,5 +261,7 @@ int main(int argc, char **argv)
 	g_test_add_func("/msg-json/filter-tag", test_filter_tag);
 	g_test_add_func("/msg-json/filter-dates", test_filter_dates);
 	g_test_add_func("/msg-json/mime", test_mime_attachment_detection);
-	return g_test_run();
+	ret = g_test_run();
+	mcp_json_free(held_args);
+	return ret;
 }
