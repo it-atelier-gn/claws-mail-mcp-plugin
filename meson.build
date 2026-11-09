@@ -49,6 +49,7 @@ sources = files(
   'src/mcp_http.c',
   'src/mcp_json.c',
   'src/mcp_tools.c',
+  'src/mcp_paths.c',
 )
 
 claws_plugindir = claws_dep_full.get_variable(pkgconfig: 'plugindir')
@@ -67,6 +68,20 @@ test_exe = executable('test_json',
   dependencies: [glib_dep],
 )
 test('json', test_exe)
+
+test_msg_json_exe = executable('test_msg_json',
+  ['tests/test_msg_json.c', 'src/mcp_json.c'],
+  include_directories: include_directories('src'),
+  dependencies: [glib_dep, gtk_dep, claws_dep],
+)
+test('msg_json', test_msg_json_exe)
+
+test_paths_exe = executable('test_paths',
+  ['tests/test_paths.c', 'src/mcp_paths.c', 'src/mcp_json.c'],
+  include_directories: include_directories('src'),
+  dependencies: [glib_dep],
+)
+test('paths', test_paths_exe)
 
 cppcheck = find_program('cppcheck', required: false)
 if cppcheck.found()

@@ -82,12 +82,13 @@ const gchar *plugin_desc(void)
 	return _("Serves the running Claws Mail instance to MCP clients over a local "
 		 "HTTP endpoint (JSON-RPC, bearer-token protected, loopback only).\n\n"
 		 "Tools: list_folders, list_messages, read_message, get_source, "
-		 "search_messages, compose, reply, forward, receive_all, send_queued, "
-		 "set_read, set_flag, mark_all_read, move_message, copy_message, "
+		 "search_messages, get_attachment, save_attachment, compose, reply, "
+		 "forward, receive_all, send_queued, set_read, set_flag, set_flags, "
+		 "learn_spam, mark_all_read, move_message, move_messages, copy_message, "
 		 "delete_message, empty_trash, export_message, import_message, "
 		 "create_folder, rename_folder, delete_folder, select_folder, "
 		 "list_accounts, status.\n\n"
-		 "Endpoint, port, token and read_only mode are configured in "
+		 "Endpoint, port, token, read_only mode and file_dir are configured in "
 		 "mcp_pluginrc inside the Claws Mail configuration directory; a ready to "
 		 "paste client configuration is written to mcp_client.json.");
 }

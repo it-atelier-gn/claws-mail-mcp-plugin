@@ -43,4 +43,6 @@ gchar *mcp_json_to_string(const McpJson *node);
 void   mcp_json_escape(GString *out, const gchar *text);
 gchar *mcp_json_quote(const gchar *text);
 
+gsize  mcp_utf8_boundary(const gchar *text, gsize max_bytes);
+
 #endif
