@@ -140,6 +140,32 @@ static void test_copy_is_independent(void)
 	mcp_json_free(copy);
 }
 
+static void test_invalid_utf8_is_repaired(void)
+{
+	gchar *quoted = mcp_json_quote("M\xfcller \xc3\xa4");
+	McpJson *root;
+
+	g_assert_true(g_utf8_validate(quoted, -1, NULL));
+	root = mcp_json_parse(quoted, -1, NULL);
+	g_assert_nonnull(root);
+	g_assert_true(g_str_has_suffix(mcp_json_get_string(root, NULL), " \xc3\xa4"));
+	mcp_json_free(root);
+	g_free(quoted);
+}
+
+static void test_utf8_boundary(void)
+{
+	const gchar *text = "a\xc3\xa4\xe2\x82\xac";
+
+	g_assert_cmpuint(mcp_utf8_boundary(text, 100), ==, 6);
+	g_assert_cmpuint(mcp_utf8_boundary(text, 6), ==, 6);
+	g_assert_cmpuint(mcp_utf8_boundary(text, 5), ==, 3);
+	g_assert_cmpuint(mcp_utf8_boundary(text, 4), ==, 3);
+	g_assert_cmpuint(mcp_utf8_boundary(text, 2), ==, 1);
+	g_assert_cmpuint(mcp_utf8_boundary(text, 0), ==, 0);
+	g_assert_cmpuint(mcp_utf8_boundary(NULL, 5), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
@@ -153,5 +179,7 @@ int main(int argc, char **argv)
 	g_test_add_func("/json/escape-output", test_escape_output);
 	g_test_add_func("/json/string-id", test_string_id_is_preserved);
 	g_test_add_func("/json/copy", test_copy_is_independent);
+	g_test_add_func("/json/invalid-utf8", test_invalid_utf8_is_repaired);
+	g_test_add_func("/json/utf8-boundary", test_utf8_boundary);
 	return g_test_run();
 }

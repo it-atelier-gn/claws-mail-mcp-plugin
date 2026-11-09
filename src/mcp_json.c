@@ -503,12 +503,32 @@ gboolean mcp_json_member_bool(const McpJson *node, const gchar *key, gboolean fa
 	return mcp_json_get_bool(mcp_json_member(node, key), fallback);
 }
 
+gsize mcp_utf8_boundary(const gchar *text, gsize max_bytes)
+{
+	gsize len;
+
+	if (text == NULL)
+		return 0;
+	len = strlen(text);
+	if (len <= max_bytes)
+		return len;
+	len = max_bytes;
+	while (len > 0 && ((guchar)text[len] & 0xC0) == 0x80)
+		len--;
+	return len;
+}
+
 void mcp_json_escape(GString *out, const gchar *text)
 {
 	const guchar *p;
+	gchar *valid = NULL;
 
 	if (text == NULL)
 		text = "";
+	if (!g_utf8_validate(text, -1, NULL)) {
+		valid = g_utf8_make_valid(text, -1);
+		text = valid;
+	}
 	g_string_append_c(out, '"');
 	for (p = (const guchar *)text; *p != '\0'; p++) {
 		switch (*p) {
@@ -528,6 +548,7 @@ void mcp_json_escape(GString *out, const gchar *text)
 		}
 	}
 	g_string_append_c(out, '"');
+	g_free(valid);
 }
 
 gchar *mcp_json_quote(const gchar *text)

@@ -6,7 +6,37 @@
 
 Native Claws Mail plugin that exposes the running mail client as an MCP server.
 
-It runs inside Claws Mail and serves a local, loopback-only HTTP endpoint (JSON-RPC over MCP, bearer-token protected). Any MCP-capable AI tool can then read folders and messages, search, compose, reply, forward, manage folders and flags, and send or receive mail through your already-configured accounts. Endpoint, port, token and read-only mode are set in `mcp_pluginrc` inside the Claws Mail config directory; the plugin writes a ready-to-paste client config to `mcp_client.json` in the same place on every start.
+It runs inside Claws Mail and serves a local, loopback-only HTTP endpoint (JSON-RPC over MCP, bearer-token protected). Any MCP-capable AI tool can then read folders and messages, search, open or save attachments, compose, reply, forward, manage folders and flags, train your spam filter, and send or receive mail through your already-configured accounts. The plugin writes a ready-to-paste client config to `mcp_client.json` in the Claws Mail config directory on every start.
+
+---
+
+## Configuration
+
+Settings live in `mcp_pluginrc` inside the Claws Mail config directory. Restart Claws Mail after editing it.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `bind_address` | `127.0.0.1` | Address the endpoint listens on |
+| `port` | `8765` | Port of the endpoint |
+| `token` | random | Bearer token clients must send |
+| `read_only` | `0` | `1` refuses every tool that changes mail, folders or files |
+| `file_dir` | `mcp_files` in the config directory | The only directory the plugin reads files from or writes files to |
+
+Everything that touches files on disk stays inside `file_dir`: saved attachments land in its `attachments` subfolder, `export_message` and `import_message` take paths inside it, and `compose` only attaches files from it. Paths can be given relative to `file_dir`. To attach a file of your own, copy it into `file_dir` first.
+
+## What AI tools see
+
+Message listings show the same state as the Claws Mail message list: read, new, marked, replied, forwarded, locked, spam, thread watch and ignore, signed, encrypted, attachment, color label and tags, plus the message ID and the ID of the message it replies to.
+
+| Task | Tools |
+|---|---|
+| Browse and filter | `list_messages` and `search_messages` filter by unread, spam, marked, attachment, tag and date range; `list_messages` reports the total number of matches |
+| Read | `read_message` returns the text body and a numbered list of attachments |
+| Attachments | `get_attachment` returns one attachment's content directly (up to 8 MiB); `save_attachment` writes it to `file_dir` without overwriting existing files |
+| Bulk changes | `set_flags` and `move_messages` handle up to 1000 messages per call |
+| Spam | `set_flag` with `spam` only changes the flag; `learn_spam` also trains an active Bogofilter or SpamAssassin plugin |
+
+The spam flag reflects what Claws Mail itself has recorded, for example after a spam filter plugin or a filtering rule marked the message. Mail that was only moved into a spam folder keeps whatever flag it had.
 
 ---
 

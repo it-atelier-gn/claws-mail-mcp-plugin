@@ -34,6 +34,16 @@ gboolean mcp_plugin_read_only(void)
 	return config.read_only;
 }
 
+const gchar *mcp_plugin_file_dir(void)
+{
+	return config.file_dir;
+}
+
+static gchar *default_file_dir(void)
+{
+	return g_build_filename(get_rc_dir(), "mcp_files", NULL);
+}
+
 static gchar *config_path(void)
 {
 	return g_strconcat(get_rc_dir(), G_DIR_SEPARATOR_S, MCP_RC_FILE, NULL);
@@ -94,9 +104,10 @@ static void config_write(const gchar *path)
 		"bind_address=%s\n"
 		"port=%u\n"
 		"token=%s\n"
-		"read_only=%d\n",
+		"read_only=%d\n"
+		"file_dir=%s\n",
 		config.bind_address, (guint)config.port, config.token,
-		config.read_only ? 1 : 0);
+		config.read_only ? 1 : 0, config.file_dir);
 
 	if (g_file_set_contents(path, text, -1, NULL))
 		g_chmod(path, 0600);
@@ -111,6 +122,7 @@ static void config_load(void)
 
 	g_free(config.bind_address);
 	g_free(config.token);
+	g_free(config.file_dir);
 	memset(&config, 0, sizeof config);
 	config.bind_address = g_strdup("127.0.0.1");
 	config.port = MCP_DEFAULT_PORT;
@@ -141,6 +153,9 @@ static void config_load(void)
 				config.token = g_strdup(value);
 			} else if (strcmp(key, "read_only") == 0) {
 				config.read_only = (*value == '1' || *value == 't' || *value == 'y');
+			} else if (strcmp(key, "file_dir") == 0 && *value != '\0') {
+				g_free(config.file_dir);
+				config.file_dir = g_canonicalize_filename(value, get_rc_dir());
 			}
 			g_free(key);
 			g_free(value);
@@ -157,6 +172,10 @@ static void config_load(void)
 	}
 	if (config.port == 0)
 		config.port = MCP_DEFAULT_PORT;
+	if (config.file_dir == NULL) {
+		config.file_dir = default_file_dir();
+		dirty = TRUE;
+	}
 
 	if (dirty)
 		config_write(path);
@@ -558,6 +577,7 @@ void mcp_server_stop(void)
 	}
 	g_free(config.bind_address);
 	g_free(config.token);
+	g_free(config.file_dir);
 	memset(&config, 0, sizeof config);
 }
 

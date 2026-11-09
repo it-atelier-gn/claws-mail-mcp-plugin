@@ -6,9 +6,11 @@
 #include <string.h>
 #include <stdarg.h>
 #include <glib.h>
+#include <glib/gstdio.h>
 
 #include "common/version.h"
 #include "common/utils.h"
+#include "common/tags.h"
 #include "folder.h"
 #include "procmsg.h"
 #include "procheader.h"
@@ -24,10 +26,15 @@
 
 #include "mcp_tools.h"
 #include "mcp_plugin.h"
+#include "mcp_msg_json.h"
+#include "mcp_paths.h"
 
 #define MCP_MSGINFO_FREE(mi) procmsg_msginfo_free(&(mi))
 
 #define MCP_MAX_BODY_CHARS 200000
+#define MCP_MAX_BULK 1000
+#define MCP_DEFAULT_INLINE_BYTES (1024 * 1024)
+#define MCP_MAX_INLINE_BYTES (8 * 1024 * 1024)
 
 static void fail_with(gchar **error, const gchar *fmt, ...) G_GNUC_PRINTF(2, 3);
 
@@ -42,51 +49,98 @@ static void fail_with(gchar **error, const gchar *fmt, ...)
 	va_end(ap);
 }
 
-static void jkey(GString *out, const gchar *key)
+static gchar **msg_tags(const MsgInfo *msginfo)
 {
-	if (out->len > 0 && out->str[out->len - 1] != '{' && out->str[out->len - 1] != '[')
-		g_string_append_c(out, ',');
-	mcp_json_escape(out, key);
-	g_string_append_c(out, ':');
+	GPtrArray *names = g_ptr_array_new();
+	GSList *cur;
+
+	for (cur = msginfo->tags; cur != NULL; cur = cur->next) {
+		const gchar *name = tags_get_tag(GPOINTER_TO_INT(cur->data));
+
+		if (name != NULL)
+			g_ptr_array_add(names, g_strdup(name));
+	}
+	g_ptr_array_add(names, NULL);
+	return (gchar **)g_ptr_array_free(names, FALSE);
 }
 
-static void jstr(GString *out, const gchar *key, const gchar *value)
+static gboolean mime_has_attachment(MimeInfo *root)
 {
-	jkey(out, key);
-	mcp_json_escape(out, value != NULL ? value : "");
+	MimeInfo *cur;
+
+	for (cur = root; cur != NULL; cur = procmime_mimeinfo_next(cur)) {
+		if (mcp_part_is_attachment(cur))
+			return TRUE;
+	}
+	return FALSE;
 }
 
-static void jint(GString *out, const gchar *key, gint64 value)
+static gboolean msg_has_attachment(MsgInfo *msginfo)
 {
-	jkey(out, key);
-	g_string_append_printf(out, "%" G_GINT64_FORMAT, value);
+	MimeInfo *root;
+	gboolean found;
+
+	if (MSG_IS_WITH_ATTACHMENT(msginfo->flags))
+		return TRUE;
+	if (MSG_IS_SCANNED(msginfo->flags) || !MSG_IS_MULTIPART(msginfo->flags))
+		return FALSE;
+	if ((MSG_IS_IMAP(msginfo->flags) || MSG_IS_NEWS(msginfo->flags)) &&
+	    !MSG_IS_FULLY_CACHED(msginfo->flags))
+		return FALSE;
+	root = procmime_scan_message(msginfo);
+	if (root == NULL)
+		return FALSE;
+	found = mime_has_attachment(root);
+	procmime_mimeinfo_free_all(&root);
+	return found;
 }
 
-static void jbool(GString *out, const gchar *key, gboolean value)
+static void append_msg(GString *out, MsgInfo *msginfo, const gchar *folder_id, gchar **tags)
 {
-	jkey(out, key);
-	g_string_append(out, value ? "true" : "false");
+	jsep(out);
+	append_msg_summary(out, msginfo, folder_id, (const gchar *const *)tags,
+			   msg_has_attachment(msginfo));
 }
 
-static void jsep(GString *out)
+static gchar *file_root(gchar **error)
 {
-	if (out->len > 0 && out->str[out->len - 1] != '[')
-		g_string_append_c(out, ',');
+	const gchar *root = mcp_plugin_file_dir();
+
+	if (g_mkdir_with_parents(root, 0700) != 0) {
+		fail_with(error, "cannot create file_dir %s", root);
+		return NULL;
+	}
+	return g_strdup(root);
 }
 
-static gchar *fmt_time(time_t t)
+static gchar *resolve_user_path(const gchar *requested, gchar **error)
 {
-	GDateTime *dt;
-	gchar *s;
+	gchar *root = file_root(error);
+	gchar *path;
 
-	if (t == 0)
-		return g_strdup("");
-	dt = g_date_time_new_from_unix_local((gint64)t);
-	if (dt == NULL)
-		return g_strdup("");
-	s = g_date_time_format(dt, "%Y-%m-%d %H:%M");
-	g_date_time_unref(dt);
-	return s;
+	if (root == NULL)
+		return NULL;
+	path = mcp_path_resolve(root, requested);
+	if (path == NULL)
+		fail_with(error, "path must be inside file_dir (%s): %s", root,
+			  requested != NULL ? requested : "(none)");
+	g_free(root);
+	return path;
+}
+
+static gchar *json_body_cut(gchar *text, gint max_chars, gboolean *truncated)
+{
+	gsize keep;
+
+	*truncated = FALSE;
+	if (text == NULL)
+		return NULL;
+	keep = mcp_utf8_boundary(text, (gsize)max_chars);
+	if (text[keep] != '\0') {
+		text[keep] = '\0';
+		*truncated = TRUE;
+	}
+	return text;
 }
 
 typedef struct {
@@ -178,27 +232,6 @@ static gint msginfo_cmp_date_desc(gconstpointer a, gconstpointer b)
 	return ma->date_t < mb->date_t ? 1 : -1;
 }
 
-static void append_msg_summary(GString *out, MsgInfo *msginfo, const gchar *folder_id)
-{
-	gchar *date = fmt_time(msginfo->date_t);
-
-	g_string_append_c(out, '{');
-	jint(out, "msgnum", msginfo->msgnum);
-	jstr(out, "folder", folder_id);
-	jstr(out, "date", date);
-	jstr(out, "from", msginfo->from);
-	jstr(out, "to", msginfo->to);
-	jstr(out, "subject", msginfo->subject);
-	jint(out, "size", (gint64)msginfo->size);
-	jbool(out, "unread", MSG_IS_UNREAD(msginfo->flags) ? TRUE : FALSE);
-	jbool(out, "new", MSG_IS_NEW(msginfo->flags) ? TRUE : FALSE);
-	jbool(out, "marked", MSG_IS_MARKED(msginfo->flags) ? TRUE : FALSE);
-	jbool(out, "replied", MSG_IS_REPLIED(msginfo->flags) ? TRUE : FALSE);
-	jbool(out, "has_attachment", MSG_IS_WITH_ATTACHMENT(msginfo->flags) ? TRUE : FALSE);
-	g_string_append_c(out, '}');
-	g_free(date);
-}
-
 typedef struct {
 	GString  *out;
 	gboolean  include_empty;
@@ -248,12 +281,15 @@ static gchar *tool_list_messages(const McpJson *args, gchar **error)
 	GSList *mlist, *cur;
 	GString *out;
 	gchar *folder_id;
+	McpMsgFilter filter;
 	gint limit = (gint)mcp_json_member_int(args, "limit", 20);
 	gint offset = (gint)mcp_json_member_int(args, "offset", 0);
-	gboolean unread_only = mcp_json_member_bool(args, "unread_only", FALSE);
-	gint index = 0, emitted = 0;
+	gint matched = 0, emitted = 0;
+	gboolean has_more = FALSE, exact = TRUE;
 
 	if (item == NULL)
+		return NULL;
+	if (!mcp_filter_parse(args, &filter, error))
 		return NULL;
 	if (limit <= 0)
 		limit = 20;
@@ -266,33 +302,82 @@ static gchar *tool_list_messages(const McpJson *args, gchar **error)
 	mlist = g_slist_sort(mlist, msginfo_cmp_date_desc);
 	folder_id = folder_item_get_identifier(item);
 
-	out = g_string_new("[");
+	out = g_string_new("{\"messages\":[");
 	for (cur = mlist; cur != NULL; cur = cur->next) {
 		MsgInfo *msginfo = cur->data;
+		gchar **tags = msg_tags(msginfo);
+		gboolean keep = mcp_filter_matches(&filter, msginfo, (const gchar *const *)tags);
 
-		if (unread_only && !MSG_IS_UNREAD(msginfo->flags))
+		if (keep && filter.has_attachment != MCP_ANY)
+			keep = mcp_tri_ok(filter.has_attachment, msg_has_attachment(msginfo));
+		if (!keep) {
+			g_strfreev(tags);
 			continue;
-		if (index++ < offset)
-			continue;
-		if (emitted >= limit)
-			break;
-		jsep(out);
-		append_msg_summary(out, msginfo, folder_id);
-		emitted++;
+		}
+		matched++;
+		if (matched > offset && emitted < limit) {
+			append_msg(out, msginfo, folder_id, tags);
+			emitted++;
+		} else if (matched > offset) {
+			has_more = TRUE;
+			if (filter.has_attachment != MCP_ANY) {
+				exact = FALSE;
+				g_strfreev(tags);
+				break;
+			}
+		}
+		g_strfreev(tags);
 	}
 	g_string_append_c(out, ']');
+	if (exact)
+		jint(out, "total", matched);
+	jint(out, "offset", offset);
+	jint(out, "returned", emitted);
+	jbool(out, "has_more", has_more);
+	g_string_append_c(out, '}');
 
 	procmsg_msg_list_free(mlist);
 	g_free(folder_id);
 	return g_string_free(out, FALSE);
 }
 
+static void append_attachments(GString *out, MimeInfo *root, gint *count)
+{
+	MimeInfo *cur;
+	gint index = 0;
+
+	jkey(out, "attachments");
+	g_string_append_c(out, '[');
+	for (cur = root; cur != NULL; cur = procmime_mimeinfo_next(cur), index++) {
+		gchar *type;
+
+		if (!mcp_part_is_attachment(cur))
+			continue;
+		type = procmime_get_content_type_str(cur->type, cur->subtype);
+		jsep(out);
+		g_string_append_c(out, '{');
+		jint(out, "part", index);
+		jstr(out, "filename", mcp_part_filename(cur));
+		jstr(out, "content_type", type);
+		jint(out, "encoded_size", cur->length);
+		jbool(out, "inline", cur->disposition == DISPOSITIONTYPE_INLINE);
+		g_string_append_c(out, '}');
+		g_free(type);
+		(*count)++;
+	}
+	g_string_append_c(out, ']');
+}
+
 static gchar *tool_read_message(const McpJson *args, gchar **error)
 {
 	FolderItem *item = require_folder(args, "folder", error);
 	MsgInfo *msginfo;
-	GString *out;
-	gchar *folder_id, *date, *text;
+	MimeInfo *root;
+	GString *out, *attachments;
+	gchar *folder_id, *text = NULL;
+	gchar **tags;
+	gint count = 0;
+	gboolean truncated;
 	gint max_chars = (gint)mcp_json_member_int(args, "max_chars", 20000);
 
 	if (item == NULL)
@@ -306,9 +391,6 @@ static gchar *tool_read_message(const McpJson *args, gchar **error)
 	if (max_chars > MCP_MAX_BODY_CHARS)
 		max_chars = MCP_MAX_BODY_CHARS;
 
-	folder_id = folder_item_get_identifier(item);
-	date = fmt_time(msginfo->date_t);
-	text = NULL;
 	{
 		FILE *fp = procmime_get_first_text_content(msginfo);
 		if (fp != NULL) {
@@ -316,30 +398,28 @@ static gchar *tool_read_message(const McpJson *args, gchar **error)
 			(void)fclose(fp);
 		}
 	}
+	text = json_body_cut(text, max_chars, &truncated);
 
-	if (text != NULL && (gint)strlen(text) > max_chars) {
-		gchar *cut = g_strndup(text, (gsize)max_chars);
-		g_free(text);
-		text = g_strconcat(cut, "\n[... truncated ...]", NULL);
-		g_free(cut);
-	}
+	attachments = g_string_new("{");
+	root = procmime_scan_message(msginfo);
+	append_attachments(attachments, root, &count);
+	procmime_mimeinfo_free_all(&root);
+
+	folder_id = folder_item_get_identifier(item);
+	tags = msg_tags(msginfo);
 
 	out = g_string_new("{");
-	jint(out, "msgnum", msginfo->msgnum);
-	jstr(out, "folder", folder_id);
-	jstr(out, "date", date);
-	jstr(out, "from", msginfo->from);
-	jstr(out, "to", msginfo->to);
+	append_msg_fields(out, msginfo, folder_id, (const gchar *const *)tags, count > 0);
 	jstr(out, "cc", msginfo->cc);
-	jstr(out, "subject", msginfo->subject);
-	jstr(out, "message_id", msginfo->msgid);
-	jbool(out, "unread", MSG_IS_UNREAD(msginfo->flags) ? TRUE : FALSE);
-	jbool(out, "has_attachment", MSG_IS_WITH_ATTACHMENT(msginfo->flags) ? TRUE : FALSE);
+	g_string_append_c(out, ',');
+	g_string_append(out, attachments->str + 1);
 	jstr(out, "body", text != NULL ? text : "");
+	jbool(out, "body_truncated", truncated);
 	g_string_append_c(out, '}');
 
+	g_string_free(attachments, TRUE);
+	g_strfreev(tags);
 	g_free(text);
-	g_free(date);
 	g_free(folder_id);
 	MCP_MSGINFO_FREE(msginfo);
 	return g_string_free(out, FALSE);
@@ -365,6 +445,7 @@ static gchar *tool_search_messages(const McpJson *args, gchar **error)
 	gboolean include_body = mcp_json_member_bool(args, "include_body", FALSE);
 	gint limit = (gint)mcp_json_member_int(args, "limit", 25);
 	gint max_scan = (gint)mcp_json_member_int(args, "max_scan", 2000);
+	McpMsgFilter filter;
 	GSList *mlist, *cur;
 	GString *out;
 	gchar *folder_id, *needle;
@@ -376,6 +457,8 @@ static gchar *tool_search_messages(const McpJson *args, gchar **error)
 		fail_with(error, "query is required");
 		return NULL;
 	}
+	if (!mcp_filter_parse(args, &filter, error))
+		return NULL;
 	if (limit <= 0)
 		limit = 25;
 	if (limit > 200)
@@ -393,9 +476,14 @@ static gchar *tool_search_messages(const McpJson *args, gchar **error)
 	out = g_string_new("[");
 	for (cur = mlist; cur != NULL && hits < limit && scanned < max_scan; cur = cur->next) {
 		MsgInfo *msginfo = cur->data;
+		gchar **tags = msg_tags(msginfo);
 		gboolean hit;
 
 		scanned++;
+		if (!mcp_filter_matches(&filter, msginfo, (const gchar *const *)tags)) {
+			g_strfreev(tags);
+			continue;
+		}
 		hit = text_contains(msginfo->subject, needle) ||
 		      text_contains(msginfo->from, needle) ||
 		      text_contains(msginfo->to, needle) ||
@@ -411,12 +499,13 @@ static gchar *tool_search_messages(const McpJson *args, gchar **error)
 			hit = text_contains(body, needle);
 			g_free(body);
 		}
-		if (!hit)
-			continue;
-
-		jsep(out);
-		append_msg_summary(out, msginfo, folder_id);
-		hits++;
+		if (hit && filter.has_attachment != MCP_ANY)
+			hit = mcp_tri_ok(filter.has_attachment, msg_has_attachment(msginfo));
+		if (hit) {
+			append_msg(out, msginfo, folder_id, tags);
+			hits++;
+		}
+		g_strfreev(tags);
 	}
 	g_string_append_c(out, ']');
 
@@ -449,6 +538,25 @@ static gchar *tool_compose(const McpJson *args, gchar **error)
 	gchar *escaped_to;
 	guint i;
 
+	if (mcp_json_is(attach, MCP_JSON_ARRAY)) {
+		for (i = 0; i < mcp_json_length(attach); i++) {
+			const gchar *requested = mcp_json_get_string(mcp_json_index(attach, i), NULL);
+			gchar *path = resolve_user_path(requested, error);
+
+			if (path == NULL) {
+				g_list_free_full(files, g_free);
+				return NULL;
+			}
+			if (!g_file_test(path, G_FILE_TEST_IS_REGULAR)) {
+				fail_with(error, "attachment not found: %s", path);
+				g_free(path);
+				g_list_free_full(files, g_free);
+				return NULL;
+			}
+			files = g_list_append(files, path);
+		}
+	}
+
 	from = mcp_json_member_string(args, "account", NULL);
 	if (from != NULL)
 		account = account_find_from_address(from, FALSE);
@@ -461,14 +569,6 @@ static gchar *tool_compose(const McpJson *args, gchar **error)
 	add_query_param(uri, "bcc", mcp_json_member_string(args, "bcc", NULL));
 	add_query_param(uri, "subject", mcp_json_member_string(args, "subject", NULL));
 	add_query_param(uri, "body", mcp_json_member_string(args, "body", NULL));
-
-	if (mcp_json_is(attach, MCP_JSON_ARRAY) && mcp_json_length(attach) > 0) {
-		for (i = 0; i < mcp_json_length(attach); i++) {
-			const gchar *path = mcp_json_get_string(mcp_json_index(attach, i), NULL);
-			if (path != NULL && g_file_test(path, G_FILE_TEST_IS_REGULAR))
-				files = g_list_append(files, g_strdup(path));
-		}
-	}
 
 	if (compose_new(account, uri->str, files) == NULL) {
 		fail_with(error, "could not open a compose window");
@@ -643,11 +743,25 @@ static gchar *tool_status(const McpJson *args, gchar **error)
 	jint(out, "new", ctx.new_msgs);
 	jstr(out, "plugin_version", MCP_PLUGIN_VERSION);
 	jbool(out, "read_only", mcp_plugin_read_only());
+	jstr(out, "file_dir", mcp_plugin_file_dir());
+	jbool(out, "spam_learner", procmsg_spam_can_learn());
 	g_string_append_c(out, '}');
 	return g_string_free(out, FALSE);
 }
 
 #define SCHEMA_EMPTY "{\"type\":\"object\",\"properties\":{}}"
+
+#define FILTER_PROPS \
+	"\"unread\":{\"type\":\"boolean\",\"description\":\"only unread (true) or only read (false)\"}," \
+	"\"spam\":{\"type\":\"boolean\",\"description\":\"only messages with (true) or without (false) the Claws spam flag\"}," \
+	"\"marked\":{\"type\":\"boolean\"}," \
+	"\"has_attachment\":{\"type\":\"boolean\"}," \
+	"\"tag\":{\"type\":\"string\",\"description\":\"only messages carrying this Claws tag\"}," \
+	"\"since\":{\"type\":\"string\",\"description\":\"YYYY-MM-DD, inclusive\"}," \
+	"\"until\":{\"type\":\"string\",\"description\":\"YYYY-MM-DD, inclusive\"}"
+
+#define MSGNUMS_PROP \
+	"\"msgnums\":{\"type\":\"array\",\"items\":{\"type\":\"integer\"},\"description\":\"message numbers, at most 1000\"}"
 
 static gchar *id_result(const gchar *key, const gchar *value)
 {
@@ -822,55 +936,197 @@ static gchar *tool_mark_all_read(const McpJson *args, gchar **error)
 	return g_strdup_printf("{\"marked_read\":%d}", n);
 }
 
+static void apply_flag(MsgInfo *msginfo, MsgPermFlags bit, gboolean value)
+{
+	if (value)
+		procmsg_msginfo_set_flags(msginfo, bit, 0);
+	else if (bit == MSG_UNREAD)
+		procmsg_msginfo_unset_flags(msginfo, MSG_UNREAD | MSG_NEW, 0);
+	else
+		procmsg_msginfo_unset_flags(msginfo, bit, 0);
+}
+
+static gboolean require_flag(const McpJson *args, MsgPermFlags *bit, gchar **error)
+{
+	const gchar *flag = mcp_json_member_string(args, "flag", NULL);
+	guint found;
+
+	if (flag == NULL) {
+		fail_with(error, "flag is required");
+		return FALSE;
+	}
+	if (!mcp_flag_from_name(flag, &found)) {
+		fail_with(error, "unknown flag: %s", flag);
+		return FALSE;
+	}
+	*bit = (MsgPermFlags)found;
+	return TRUE;
+}
+
+static GSList *require_msginfos(const McpJson *args, FolderItem *item, GString *missing,
+				gchar **error)
+{
+	const McpJson *nums = mcp_json_member(args, "msgnums");
+	GHashTable *seen;
+	GSList *list = NULL;
+	guint i, n;
+
+	n = mcp_json_is(nums, MCP_JSON_ARRAY) ? mcp_json_length(nums) : 0;
+	if (n == 0) {
+		fail_with(error, "msgnums must be a non-empty array of message numbers");
+		return NULL;
+	}
+	if (n > MCP_MAX_BULK) {
+		fail_with(error, "at most %d messages per call", MCP_MAX_BULK);
+		return NULL;
+	}
+
+	seen = g_hash_table_new(g_direct_hash, g_direct_equal);
+	g_string_append_c(missing, '[');
+	for (i = 0; i < n; i++) {
+		gint num = (gint)mcp_json_get_int(mcp_json_index(nums, i), -1);
+		MsgInfo *msginfo;
+
+		if (num < 0 || g_hash_table_contains(seen, GINT_TO_POINTER(num)))
+			continue;
+		g_hash_table_add(seen, GINT_TO_POINTER(num));
+		msginfo = folder_item_get_msginfo(item, num);
+		if (msginfo != NULL) {
+			list = g_slist_prepend(list, msginfo);
+		} else {
+			jsep(missing);
+			g_string_append_printf(missing, "%d", num);
+		}
+	}
+	g_string_append_c(missing, ']');
+	g_hash_table_destroy(seen);
+
+	if (list == NULL)
+		fail_with(error, "none of the given messages exist in this folder");
+	return g_slist_reverse(list);
+}
+
+static gchar *bulk_result(const gchar *key, guint count, GString *missing)
+{
+	gchar *result = g_strdup_printf("{\"%s\":%u,\"missing\":%s}", key, count, missing->str);
+
+	g_string_free(missing, TRUE);
+	return result;
+}
+
 static gchar *tool_set_flag(const McpJson *args, gchar **error)
 {
 	FolderItem *item = require_folder(args, "folder", error);
-	const gchar *flag = mcp_json_member_string(args, "flag", NULL);
 	gboolean value = mcp_json_member_bool(args, "value", TRUE);
 	MsgInfo *msginfo;
 	MsgPermFlags bit;
 	gchar *quoted, *result;
 
-	if (item == NULL)
+	if (item == NULL || !require_flag(args, &bit, error))
 		return NULL;
-	if (flag == NULL) {
-		fail_with(error, "flag is required");
-		return NULL;
-	}
-	if (g_ascii_strcasecmp(flag, "marked") == 0)
-		bit = MSG_MARKED;
-	else if (g_ascii_strcasecmp(flag, "locked") == 0)
-		bit = MSG_LOCKED;
-	else if (g_ascii_strcasecmp(flag, "unread") == 0)
-		bit = MSG_UNREAD;
-	else if (g_ascii_strcasecmp(flag, "replied") == 0)
-		bit = MSG_REPLIED;
-	else if (g_ascii_strcasecmp(flag, "forwarded") == 0)
-		bit = MSG_FORWARDED;
-	else if (g_ascii_strcasecmp(flag, "ignore_thread") == 0)
-		bit = MSG_IGNORE_THREAD;
-	else if (g_ascii_strcasecmp(flag, "watch_thread") == 0)
-		bit = MSG_WATCH_THREAD;
-	else {
-		fail_with(error, "unknown flag: %s", flag);
-		return NULL;
-	}
-
 	msginfo = require_msginfo(args, item, error);
 	if (msginfo == NULL)
 		return NULL;
 
-	if (value)
-		procmsg_msginfo_set_flags(msginfo, bit, 0);
-	else
-		procmsg_msginfo_unset_flags(msginfo, bit, 0);
+	apply_flag(msginfo, bit, value);
 	MCP_MSGINFO_FREE(msginfo);
 
-	quoted = mcp_json_quote(flag);
+	quoted = mcp_json_quote(mcp_json_member_string(args, "flag", ""));
 	result = g_strdup_printf("{\"flag\":%s,\"value\":%s}",
 				 quoted, value ? "true" : "false");
 	g_free(quoted);
 	return result;
+}
+
+static gchar *tool_set_flags(const McpJson *args, gchar **error)
+{
+	FolderItem *item = require_folder(args, "folder", error);
+	gboolean value = mcp_json_member_bool(args, "value", TRUE);
+	GString *missing;
+	GSList *list, *cur;
+	MsgPermFlags bit;
+	guint count = 0;
+
+	if (item == NULL || !require_flag(args, &bit, error))
+		return NULL;
+	missing = g_string_new(NULL);
+	list = require_msginfos(args, item, missing, error);
+	if (list == NULL) {
+		g_string_free(missing, TRUE);
+		return NULL;
+	}
+	for (cur = list; cur != NULL; cur = cur->next, count++)
+		apply_flag(cur->data, bit, value);
+	procmsg_msg_list_free(list);
+	return bulk_result("updated", count, missing);
+}
+
+static gchar *tool_move_messages(const McpJson *args, gchar **error)
+{
+	FolderItem *item = require_folder(args, "folder", error);
+	FolderItem *dest;
+	GString *missing;
+	GSList *list;
+	guint count;
+
+	if (item == NULL)
+		return NULL;
+	dest = resolve_folder(mcp_json_member_string(args, "target", NULL));
+	if (dest == NULL || dest->no_select) {
+		fail_with(error, "target folder not found or not selectable");
+		return NULL;
+	}
+	if (dest == item) {
+		fail_with(error, "target is the source folder");
+		return NULL;
+	}
+	missing = g_string_new(NULL);
+	list = require_msginfos(args, item, missing, error);
+	if (list == NULL) {
+		g_string_free(missing, TRUE);
+		return NULL;
+	}
+	count = g_slist_length(list);
+	if (folder_item_move_msgs(dest, list) < 0) {
+		procmsg_msg_list_free(list);
+		g_string_free(missing, TRUE);
+		fail_with(error, "move failed");
+		return NULL;
+	}
+	procmsg_msg_list_free(list);
+	return bulk_result("moved", count, missing);
+}
+
+static gchar *tool_learn_spam(const McpJson *args, gchar **error)
+{
+	FolderItem *item = require_folder(args, "folder", error);
+	gboolean spam = mcp_json_member_bool(args, "spam", TRUE);
+	GString *missing;
+	GSList *list, *cur;
+	guint count = 0;
+
+	if (item == NULL)
+		return NULL;
+	if (!procmsg_spam_can_learn()) {
+		fail_with(error, "no spam learner is active; enable the Bogofilter or SpamAssassin plugin");
+		return NULL;
+	}
+	missing = g_string_new(NULL);
+	list = require_msginfos(args, item, missing, error);
+	if (list == NULL) {
+		g_string_free(missing, TRUE);
+		return NULL;
+	}
+	if (procmsg_spam_learner_learn(NULL, list, spam) != 0) {
+		procmsg_msg_list_free(list);
+		g_string_free(missing, TRUE);
+		fail_with(error, "the spam learner reported an error");
+		return NULL;
+	}
+	for (cur = list; cur != NULL; cur = cur->next, count++)
+		apply_flag(cur->data, MSG_SPAM, spam);
+	procmsg_msg_list_free(list);
+	return bulk_result(spam ? "learned_spam" : "learned_ham", count, missing);
 }
 
 static gchar *tool_get_source(const McpJson *args, gchar **error)
@@ -879,6 +1135,7 @@ static gchar *tool_get_source(const McpJson *args, gchar **error)
 	MsgInfo *msginfo;
 	gchar *file, *contents = NULL;
 	gsize len = 0;
+	gboolean truncated;
 	gint max_chars = (gint)mcp_json_member_int(args, "max_chars", 50000);
 	GString *out;
 
@@ -901,12 +1158,11 @@ static gchar *tool_get_source(const McpJson *args, gchar **error)
 		max_chars = 50000;
 	if (max_chars > MCP_MAX_BODY_CHARS)
 		max_chars = MCP_MAX_BODY_CHARS;
-	if ((gint)len > max_chars)
-		contents[max_chars] = '\0';
+	json_body_cut(contents, max_chars, &truncated);
 
 	out = g_string_new("{");
 	jstr(out, "source", contents);
-	jbool(out, "truncated", (gint)len > max_chars);
+	jbool(out, "truncated", truncated);
 	g_string_append_c(out, '}');
 	g_free(contents);
 	return g_string_free(out, FALSE);
@@ -915,44 +1171,56 @@ static gchar *tool_get_source(const McpJson *args, gchar **error)
 static gchar *tool_export_message(const McpJson *args, gchar **error)
 {
 	FolderItem *item = require_folder(args, "folder", error);
-	const gchar *dest = mcp_json_member_string(args, "path", NULL);
 	MsgInfo *msginfo;
-	gchar *file, *contents = NULL;
+	gchar *dest, *dir, *file, *contents = NULL;
 	gsize len = 0;
+	GString *out;
 
 	if (item == NULL)
 		return NULL;
-	if (dest == NULL || *dest == '\0') {
-		fail_with(error, "path is required");
+	dest = resolve_user_path(mcp_json_member_string(args, "path", NULL), error);
+	if (dest == NULL)
+		return NULL;
+	msginfo = require_msginfo(args, item, error);
+	if (msginfo == NULL) {
+		g_free(dest);
 		return NULL;
 	}
-	msginfo = require_msginfo(args, item, error);
-	if (msginfo == NULL)
-		return NULL;
 
 	file = procmsg_get_message_file(msginfo);
 	MCP_MSGINFO_FREE(msginfo);
 	if (file == NULL || !g_file_get_contents(file, &contents, &len, NULL)) {
 		fail_with(error, "could not read message");
 		g_free(file);
+		g_free(dest);
 		return NULL;
 	}
 	g_free(file);
 
+	dir = g_path_get_dirname(dest);
+	g_mkdir_with_parents(dir, 0700);
+	g_free(dir);
 	if (!g_file_set_contents(dest, contents, (gssize)len, NULL)) {
 		fail_with(error, "could not write to %s", dest);
 		g_free(contents);
+		g_free(dest);
 		return NULL;
 	}
 	g_free(contents);
-	return g_strdup_printf("{\"exported_bytes\":%" G_GSIZE_FORMAT "}", len);
+
+	out = g_string_new("{");
+	jstr(out, "path", dest);
+	jint(out, "exported_bytes", (gint64)len);
+	g_string_append_c(out, '}');
+	g_free(dest);
+	return g_string_free(out, FALSE);
 }
 
 static gchar *tool_import_message(const McpJson *args, gchar **error)
 {
 	FolderItem *item = require_folder(args, "folder", error);
-	const gchar *path = mcp_json_member_string(args, "path", NULL);
 	MsgFlags flags;
+	gchar *path;
 	gint newnum;
 
 	if (item == NULL)
@@ -961,19 +1229,175 @@ static gchar *tool_import_message(const McpJson *args, gchar **error)
 		fail_with(error, "target folder is not selectable");
 		return NULL;
 	}
-	if (path == NULL || !g_file_test(path, G_FILE_TEST_IS_REGULAR)) {
-		fail_with(error, "file not found: %s", path != NULL ? path : "(none)");
+	path = resolve_user_path(mcp_json_member_string(args, "path", NULL), error);
+	if (path == NULL)
+		return NULL;
+	if (!g_file_test(path, G_FILE_TEST_IS_REGULAR)) {
+		fail_with(error, "file not found: %s", path);
+		g_free(path);
 		return NULL;
 	}
 
 	flags.perm_flags = MSG_NEW | MSG_UNREAD;
 	flags.tmp_flags = 0;
 	newnum = folder_item_add_msg(item, path, &flags, FALSE);
+	g_free(path);
 	if (newnum < 0) {
 		fail_with(error, "import failed");
 		return NULL;
 	}
 	return g_strdup_printf("{\"msgnum\":%d}", newnum);
+}
+
+typedef struct {
+	MsgInfo  *msginfo;
+	MimeInfo *root;
+	MimeInfo *part;
+	gint      index;
+} PartRef;
+
+static void part_ref_clear(PartRef *ref)
+{
+	if (ref->root != NULL)
+		procmime_mimeinfo_free_all(&ref->root);
+	if (ref->msginfo != NULL)
+		MCP_MSGINFO_FREE(ref->msginfo);
+}
+
+static gboolean require_part(const McpJson *args, PartRef *ref, gchar **error)
+{
+	FolderItem *item = require_folder(args, "folder", error);
+	MimeInfo *cur;
+	gint index = 0;
+
+	memset(ref, 0, sizeof *ref);
+	ref->index = (gint)mcp_json_member_int(args, "part", -1);
+	if (item == NULL)
+		return FALSE;
+	if (ref->index < 0) {
+		fail_with(error, "part is required (see attachments in read_message)");
+		return FALSE;
+	}
+	ref->msginfo = require_msginfo(args, item, error);
+	if (ref->msginfo == NULL)
+		return FALSE;
+	ref->root = procmime_scan_message(ref->msginfo);
+	for (cur = ref->root; cur != NULL; cur = procmime_mimeinfo_next(cur), index++) {
+		if (index == ref->index) {
+			if (mcp_part_is_attachment(cur))
+				ref->part = cur;
+			break;
+		}
+	}
+	if (ref->part == NULL) {
+		fail_with(error, "part %d is not an attachment of this message", ref->index);
+		part_ref_clear(ref);
+		return FALSE;
+	}
+	if (!procmime_decode_content(ref->part)) {
+		fail_with(error, "could not decode part %d", ref->index);
+		part_ref_clear(ref);
+		return FALSE;
+	}
+	return TRUE;
+}
+
+static gchar *tool_get_attachment(const McpJson *args, gchar **error)
+{
+	gint64 max_bytes = mcp_json_member_int(args, "max_bytes", MCP_DEFAULT_INLINE_BYTES);
+	PartRef ref;
+	gchar *type, *encoded;
+	gpointer data;
+	gsize size;
+	GString *out;
+
+	if (max_bytes <= 0)
+		max_bytes = MCP_DEFAULT_INLINE_BYTES;
+	if (max_bytes > MCP_MAX_INLINE_BYTES)
+		max_bytes = MCP_MAX_INLINE_BYTES;
+	if (!require_part(args, &ref, error))
+		return NULL;
+
+	size = ref.part->length;
+	if ((gint64)size > max_bytes) {
+		fail_with(error, "attachment is %" G_GSIZE_FORMAT " bytes, above max_bytes %"
+			  G_GINT64_FORMAT "; use save_attachment", size, max_bytes);
+		part_ref_clear(&ref);
+		return NULL;
+	}
+	data = procmime_get_part_as_string(ref.part, FALSE);
+	if (data == NULL && size > 0) {
+		fail_with(error, "could not read part %d", ref.index);
+		part_ref_clear(&ref);
+		return NULL;
+	}
+
+	encoded = g_base64_encode(data, size);
+	type = procmime_get_content_type_str(ref.part->type, ref.part->subtype);
+	out = g_string_new("{");
+	jint(out, "part", ref.index);
+	jstr(out, "filename", mcp_part_filename(ref.part));
+	jstr(out, "content_type", type);
+	jint(out, "size", (gint64)size);
+	jstr(out, "data_base64", encoded);
+	g_string_append_c(out, '}');
+
+	g_free(type);
+	g_free(encoded);
+	g_free(data);
+	part_ref_clear(&ref);
+	return g_string_free(out, FALSE);
+}
+
+static gchar *tool_save_attachment(const McpJson *args, gchar **error)
+{
+	PartRef ref;
+	gchar *root, *dir, *name, *path, *raw;
+	GStatBuf st;
+	GString *out;
+
+	if (!require_part(args, &ref, error))
+		return NULL;
+	root = file_root(error);
+	if (root == NULL) {
+		part_ref_clear(&ref);
+		return NULL;
+	}
+	dir = g_build_filename(root, "attachments", NULL);
+	g_free(root);
+	if (g_mkdir_with_parents(dir, 0700) != 0) {
+		fail_with(error, "cannot create %s", dir);
+		g_free(dir);
+		part_ref_clear(&ref);
+		return NULL;
+	}
+
+	raw = mcp_part_filename(ref.part) != NULL
+		? g_strdup(mcp_part_filename(ref.part))
+		: g_strdup_printf("attachment-%d", ref.index);
+	name = mcp_safe_filename(raw);
+	g_free(raw);
+	path = mcp_unique_path(dir, name);
+	g_free(dir);
+
+	if (path == NULL || procmime_get_part(path, ref.part) != 0) {
+		fail_with(error, "could not save part %d", ref.index);
+		g_free(path);
+		g_free(name);
+		part_ref_clear(&ref);
+		return NULL;
+	}
+
+	out = g_string_new("{");
+	jstr(out, "path", path);
+	jstr(out, "filename", name);
+	jint(out, "size", g_stat(path, &st) == 0 ? (gint64)st.st_size : -1);
+	g_string_append_c(out, '}');
+
+	g_free(path);
+	g_free(name);
+	part_ref_clear(&ref);
+	return g_string_free(out, FALSE);
 }
 
 static gchar *tool_reply(const McpJson *args, gchar **error)
@@ -1041,36 +1465,60 @@ static const McpTool tools[] = {
 	},
 	{
 		"list_messages",
-		"List messages of a folder, newest first.",
+		"List messages of a folder, newest first, with Claws flags, tags and color label. "
+		"Returns {messages, total, offset, returned, has_more}; total is omitted when filtering by has_attachment.",
 		"{\"type\":\"object\",\"properties\":{"
 		"\"folder\":{\"type\":\"string\",\"description\":\"folder identifier (#mh/Mail/inbox) or name; defaults to inbox\"},"
 		"\"limit\":{\"type\":\"integer\",\"description\":\"max messages (default 20, max 500)\"},"
-		"\"offset\":{\"type\":\"integer\"},"
-		"\"unread_only\":{\"type\":\"boolean\"}"
+		"\"offset\":{\"type\":\"integer\",\"description\":\"skip this many matching messages\"},"
+		"\"unread_only\":{\"type\":\"boolean\",\"description\":\"same as unread=true\"},"
+		FILTER_PROPS
 		"}}",
 		tool_list_messages, FALSE
 	},
 	{
 		"read_message",
-		"Read a single message: headers plus its first text part.",
+		"Read a single message: headers, flags, tags, attachment list and its first text part.",
 		"{\"type\":\"object\",\"properties\":{"
 		"\"folder\":{\"type\":\"string\"},"
 		"\"msgnum\":{\"type\":\"integer\",\"description\":\"message number as returned by list_messages\"},"
-		"\"max_chars\":{\"type\":\"integer\",\"description\":\"truncate body (default 20000)\"}"
+		"\"max_chars\":{\"type\":\"integer\",\"description\":\"truncate body to this many bytes (default 20000)\"}"
 		"},\"required\":[\"msgnum\"]}",
 		tool_read_message, FALSE
 	},
 	{
 		"search_messages",
-		"Case-insensitive substring search over a folder (headers, optionally body).",
+		"Case-insensitive substring search over a folder (headers, optionally body), narrowed by optional filters.",
 		"{\"type\":\"object\",\"properties\":{"
 		"\"query\":{\"type\":\"string\"},"
 		"\"folder\":{\"type\":\"string\"},"
 		"\"limit\":{\"type\":\"integer\"},"
 		"\"include_body\":{\"type\":\"boolean\",\"description\":\"also scan the text body (slower)\"},"
-		"\"max_scan\":{\"type\":\"integer\"}"
+		"\"max_scan\":{\"type\":\"integer\"},"
+		FILTER_PROPS
 		"},\"required\":[\"query\"]}",
 		tool_search_messages, FALSE
+	},
+	{
+		"get_attachment",
+		"Return one attachment's decoded content as base64. Part numbers come from read_message.",
+		"{\"type\":\"object\",\"properties\":{"
+		"\"folder\":{\"type\":\"string\"},"
+		"\"msgnum\":{\"type\":\"integer\"},"
+		"\"part\":{\"type\":\"integer\",\"description\":\"part number from read_message attachments\"},"
+		"\"max_bytes\":{\"type\":\"integer\",\"description\":\"refuse larger attachments (default 1 MiB, max 8 MiB)\"}"
+		"},\"required\":[\"msgnum\",\"part\"]}",
+		tool_get_attachment, FALSE
+	},
+	{
+		"save_attachment",
+		"Save one attachment into the attachments subfolder of file_dir and return its path. Never overwrites.",
+		"{\"type\":\"object\",\"properties\":{"
+		"\"folder\":{\"type\":\"string\"},"
+		"\"msgnum\":{\"type\":\"integer\"},"
+		"\"part\":{\"type\":\"integer\",\"description\":\"part number from read_message attachments\"}"
+		"},\"required\":[\"msgnum\",\"part\"]}",
+		tool_save_attachment, TRUE
 	},
 	{
 		"compose",
@@ -1082,7 +1530,7 @@ static const McpTool tools[] = {
 		"\"subject\":{\"type\":\"string\"},"
 		"\"body\":{\"type\":\"string\"},"
 		"\"account\":{\"type\":\"string\",\"description\":\"sender address of the account to use\"},"
-		"\"attach\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"absolute file paths\"}"
+		"\"attach\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"files inside file_dir, absolute or relative to it\"}"
 		"},\"required\":[\"to\"]}",
 		tool_compose, TRUE
 	},
@@ -1201,15 +1649,45 @@ static const McpTool tools[] = {
 	},
 	{
 		"set_flag",
-		"Set or clear a message flag.",
+		"Set or clear a message flag. Setting spam does not train a spam filter; use learn_spam for that.",
 		"{\"type\":\"object\",\"properties\":{"
 		"\"folder\":{\"type\":\"string\"},"
 		"\"msgnum\":{\"type\":\"integer\"},"
-		"\"flag\":{\"type\":\"string\",\"enum\":[\"marked\",\"locked\",\"unread\","
-		"\"replied\",\"forwarded\",\"ignore_thread\",\"watch_thread\"]},"
+		"\"flag\":{\"type\":\"string\",\"enum\":" MCP_FLAG_ENUM_JSON "},"
 		"\"value\":{\"type\":\"boolean\",\"description\":\"true sets the flag (default), false clears it\"}"
 		"},\"required\":[\"msgnum\",\"flag\"]}",
 		tool_set_flag, TRUE
+	},
+	{
+		"set_flags",
+		"Set or clear one flag on many messages of a folder at once.",
+		"{\"type\":\"object\",\"properties\":{"
+		"\"folder\":{\"type\":\"string\"},"
+		MSGNUMS_PROP ","
+		"\"flag\":{\"type\":\"string\",\"enum\":" MCP_FLAG_ENUM_JSON "},"
+		"\"value\":{\"type\":\"boolean\",\"description\":\"true sets the flag (default), false clears it\"}"
+		"},\"required\":[\"msgnums\",\"flag\"]}",
+		tool_set_flags, TRUE
+	},
+	{
+		"move_messages",
+		"Move many messages of a folder to another folder in one step.",
+		"{\"type\":\"object\",\"properties\":{"
+		"\"folder\":{\"type\":\"string\"},"
+		MSGNUMS_PROP ","
+		"\"target\":{\"type\":\"string\"}"
+		"},\"required\":[\"msgnums\",\"target\"]}",
+		tool_move_messages, TRUE
+	},
+	{
+		"learn_spam",
+		"Train the active spam filter plugin (Bogofilter or SpamAssassin) with messages and set or clear their spam flag.",
+		"{\"type\":\"object\",\"properties\":{"
+		"\"folder\":{\"type\":\"string\"},"
+		MSGNUMS_PROP ","
+		"\"spam\":{\"type\":\"boolean\",\"description\":\"true learns as spam (default), false learns as not spam\"}"
+		"},\"required\":[\"msgnums\"]}",
+		tool_learn_spam, TRUE
 	},
 	{
 		"get_source",
@@ -1223,20 +1701,20 @@ static const McpTool tools[] = {
 	},
 	{
 		"export_message",
-		"Write a message's raw source to a file on disk.",
+		"Write a message's raw source to a file inside file_dir.",
 		"{\"type\":\"object\",\"properties\":{"
 		"\"folder\":{\"type\":\"string\"},"
 		"\"msgnum\":{\"type\":\"integer\"},"
-		"\"path\":{\"type\":\"string\",\"description\":\"absolute destination path\"}"
+		"\"path\":{\"type\":\"string\",\"description\":\"destination inside file_dir, absolute or relative to it\"}"
 		"},\"required\":[\"msgnum\",\"path\"]}",
 		tool_export_message, TRUE
 	},
 	{
 		"import_message",
-		"Add an RFC822 (.eml) file from disk into a folder as a new message.",
+		"Add an RFC822 (.eml) file from file_dir into a folder as a new message.",
 		"{\"type\":\"object\",\"properties\":{"
 		"\"folder\":{\"type\":\"string\"},"
-		"\"path\":{\"type\":\"string\",\"description\":\"absolute path to the .eml file\"}"
+		"\"path\":{\"type\":\"string\",\"description\":\".eml file inside file_dir, absolute or relative to it\"}"
 		"},\"required\":[\"folder\",\"path\"]}",
 		tool_import_message, TRUE
 	},

@@ -17,9 +17,11 @@ typedef struct {
 	guint16  port;
 	gchar   *token;
 	gboolean read_only;
+	gchar   *file_dir;
 } McpConfig;
 
 const McpConfig *mcp_plugin_config(void);
 gboolean         mcp_plugin_read_only(void);
+const gchar     *mcp_plugin_file_dir(void);
 
 #endif
